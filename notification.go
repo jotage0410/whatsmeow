@@ -373,6 +373,10 @@ func (cli *Client) parseNewsletterMessages(node *waBinary.Node) []*types.Newslet
 					rag := reaction.AttrGetter()
 					msg.ReactionCounts[rag.String("code")] = rag.Int("count")
 				}
+			case "votes":
+				msg.VoteCounts = parseNewsletterVotes(subchild)
+			case "responses_count":
+				msg.ResponsesCount = subchild.AttrGetter().Int("count")
 			}
 		}
 		output = append(output, &msg)

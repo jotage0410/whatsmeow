@@ -710,6 +710,24 @@ func (cli *Client) sendNewsletter(
 	mediaID string,
 	timings *MessageDebugTimings,
 ) ([]byte, error) {
+	start := time.Now()
+	node, err := buildNewsletterMessageNode(to, id, message, mediaID)
+	timings.Marshal = time.Since(start)
+	if err != nil {
+		return nil, err
+	}
+	start = time.Now()
+	data, err := cli.sendNodeAndGetData(ctx, node)
+	timings.Send = time.Since(start)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send message node: %w", err)
+	}
+	return data, nil
+}
+
+// buildNewsletterMessageNode builds the <message> node that posts, edits or
+// revokes a channel message.
+func buildNewsletterMessageNode(to types.JID, id types.MessageID, message *waE2E.Message, mediaID string) (waBinary.Node, error) {
 	attrs := waBinary.Attrs{
 		"to":   to,
 		"id":   id,
@@ -718,18 +736,19 @@ func (cli *Client) sendNewsletter(
 	if mediaID != "" {
 		attrs["media_id"] = mediaID
 	}
+	isEdit := false
 	if message.EditedMessage != nil {
 		attrs["edit"] = string(types.EditAttributeAdminEdit)
 		message = message.GetEditedMessage().GetMessage().GetProtocolMessage().GetEditedMessage()
+		isEdit = true
 	} else if message.ProtocolMessage != nil && message.ProtocolMessage.GetType() == waE2E.ProtocolMessage_REVOKE {
 		attrs["edit"] = string(types.EditAttributeAdminRevoke)
 		message = nil
+		isEdit = true
 	}
-	start := time.Now()
 	plaintext, _, err := marshalMessage(to, message)
-	timings.Marshal = time.Since(start)
 	if err != nil {
-		return nil, err
+		return waBinary.Node{}, err
 	}
 	plaintextNode := waBinary.Node{
 		Tag:     "plaintext",
@@ -741,18 +760,18 @@ func (cli *Client) sendNewsletter(
 			plaintextNode.Attrs["mediatype"] = mediaType
 		}
 	}
-	node := waBinary.Node{
+	content := []waBinary.Node{plaintextNode}
+	if !isEdit && message != nil {
+		if msgType, metaNode := newsletterPostMeta(message); metaNode != nil {
+			attrs["type"] = msgType
+			content = append(content, *metaNode)
+		}
+	}
+	return waBinary.Node{
 		Tag:     "message",
 		Attrs:   attrs,
-		Content: []waBinary.Node{plaintextNode},
-	}
-	start = time.Now()
-	data, err := cli.sendNodeAndGetData(ctx, node)
-	timings.Send = time.Since(start)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send message node: %w", err)
-	}
-	return data, nil
+		Content: content,
+	}, nil
 }
 
 type nodeExtraParams struct {

@@ -155,6 +155,11 @@ type NewsletterMessage struct {
 	ViewsCount      int
 	ForwardsCount   int
 	ReactionCounts  map[string]int
+	// VoteCounts maps the hex-encoded SHA-256 hash of each poll option name
+	// to its vote count. It is only set for polls and quizzes.
+	VoteCounts map[string]int
+	// ResponsesCount is the number of private responses to a question post.
+	ResponsesCount int
 
 	// This is only present when fetching messages, not in live updates
 	Message *waE2E.Message
