@@ -11,11 +11,12 @@ import (
 	"encoding/hex"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
-	"google.golang.org/protobuf/proto"
 )
 
 var testNewsletterJID = types.NewJID("120363000000000000", types.NewsletterServer)
