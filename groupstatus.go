@@ -39,7 +39,9 @@ const (
 //		ImageMessage: &waE2E.ImageMessage{...},
 //	})
 //
-// The sender must be a member of the group. Group status is a recent WhatsApp feature, so the
+// The sender must be a member of the group. When the cached member list does not include this
+// account, the group info is fetched again before sending, and the error wraps ErrNotInGroup when
+// the server says the account is not a member. Group status is a recent WhatsApp feature, so the
 // server may still reject it for some accounts or groups.
 func (cli *Client) SendGroupStatus(ctx context.Context, groupJID types.JID, inner *waE2E.Message, extra ...SendRequestExtra) (SendResponse, error) {
 	if cli == nil {
@@ -62,23 +64,73 @@ func (cli *Client) SendGroupStatus(ctx context.Context, groupJID types.JID, inne
 	return cli.SendMessage(ctx, groupJID, message, extra...)
 }
 
-// getGroupStatusAuthor returns the identity this account posts with in the given group,
-// which is the LID in groups that use LID addressing, the same rule SendMessage uses.
+// getGroupStatusAuthor returns the identity this account posts with in the given group, after
+// checking that the account is still a member (see groupStatusAuthor).
 func (cli *Client) getGroupStatusAuthor(ctx context.Context, groupJID types.JID) (types.JID, error) {
-	ownID := cli.getOwnID()
-	if ownID.IsEmpty() {
+	return groupStatusAuthor(ctx, cli, groupJID, cli.getOwnID(), cli.getOwnLID())
+}
+
+// groupStatusGroupSource is what SendGroupStatus needs to know about the target group;
+// *Client implements it.
+type groupStatusGroupSource interface {
+	getCachedGroupData(ctx context.Context, jid types.JID) (*groupMetaCache, error)
+	refreshGroupData(ctx context.Context, jid types.JID) (*groupMetaCache, error)
+}
+
+// refreshGroupData asks the server for the group info, bypassing the cache, and returns the
+// refreshed cache entry.
+func (cli *Client) refreshGroupData(ctx context.Context, jid types.JID) (*groupMetaCache, error) {
+	if _, err := cli.getGroupInfo(ctx, jid, true); err != nil {
+		return nil, err
+	}
+	cli.groupCacheLock.Lock()
+	defer cli.groupCacheLock.Unlock()
+	return cli.groupCache[jid], nil
+}
+
+// groupStatusAuthor returns the identity this account posts with in the group, which is the LID
+// in groups that use LID addressing, the same rule SendMessage uses.
+//
+// It also makes sure the account is still a member. The group cache only follows the group
+// notifications this session received: removing the account from a group deletes it from the
+// cached members but keeps the entry, so sending from the cache would leave the outcome to the
+// server's ack. When the cached members do not include the account, the group info is fetched
+// again; the server answers that query with 403 (ErrNotInGroup) when the account is not a
+// member. If the fresh member list still does not name the account, the status is sent anyway
+// and the server decides, rather than refusing on a member list that may be incomplete.
+func groupStatusAuthor(ctx context.Context, source groupStatusGroupSource, groupJID, ownPN, ownLID types.JID) (types.JID, error) {
+	if ownPN.IsEmpty() {
 		return types.EmptyJID, ErrNotLoggedIn
 	}
-	groupData, err := cli.getCachedGroupData(ctx, groupJID)
+	groupData, err := source.getCachedGroupData(ctx, groupJID)
+	if err == nil && !groupData.hasMember(ownPN, ownLID) {
+		groupData, err = source.refreshGroupData(ctx, groupJID)
+	}
 	if err != nil {
 		return types.EmptyJID, fmt.Errorf("failed to get group info: %w", err)
+	} else if groupData == nil {
+		return types.EmptyJID, fmt.Errorf("failed to get group info: no data for %s", groupJID)
 	}
-	if groupData.AddressingMode == types.AddressingModeLID {
-		if ownLID := cli.getOwnLID(); !ownLID.IsEmpty() {
-			return ownLID.ToNonAD(), nil
+	if groupData.AddressingMode == types.AddressingModeLID && !ownLID.IsEmpty() {
+		return ownLID.ToNonAD(), nil
+	}
+	return ownPN.ToNonAD(), nil
+}
+
+// hasMember reports whether any of the given identities is in the cached member list, ignoring
+// devices. Empty JIDs never match.
+func (gmc *groupMetaCache) hasMember(ids ...types.JID) bool {
+	if gmc == nil {
+		return false
+	}
+	for _, member := range gmc.Members {
+		for _, id := range ids {
+			if !id.IsEmpty() && member.User == id.User && member.Server == id.Server {
+				return true
+			}
 		}
 	}
-	return ownID.ToNonAD(), nil
+	return false
 }
 
 // BuildGroupStatusMessage wraps a message in the envelope WhatsApp uses for group status updates.

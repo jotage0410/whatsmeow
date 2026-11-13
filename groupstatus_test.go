@@ -312,9 +312,11 @@ func TestGroupStatusAuthorFollowsGroupAddressing(t *testing.T) {
 	pnGroup := types.NewJID("120363000000000003", types.GroupServer)
 	cli := &Client{
 		Store: &store.Device{ID: &pn, LID: lid},
+		// Both entries list the account, so the author is resolved from the
+		// cache without asking the server (the client has no connection).
 		groupCache: map[types.JID]*groupMetaCache{
-			testStatusGroup: {AddressingMode: types.AddressingModeLID},
-			pnGroup:         {AddressingMode: types.AddressingModePN},
+			testStatusGroup: {AddressingMode: types.AddressingModeLID, Members: []types.JID{lid.ToNonAD()}},
+			pnGroup:         {AddressingMode: types.AddressingModePN, Members: []types.JID{pn.ToNonAD()}},
 		},
 	}
 
@@ -335,6 +337,182 @@ func TestGroupStatusAuthorFollowsGroupAddressing(t *testing.T) {
 
 	if _, err = (&Client{Store: &store.Device{}}).getGroupStatusAuthor(context.Background(), testStatusGroup); !errors.Is(err, ErrNotLoggedIn) {
 		t.Fatalf("logged out error = %v, want ErrNotLoggedIn", err)
+	}
+}
+
+type fakeGroupStatusGroupSource struct {
+	cached     *groupMetaCache
+	cachedErr  error
+	refreshed  *groupMetaCache
+	refreshErr error
+
+	cachedCalls  int
+	refreshCalls int
+}
+
+func (f *fakeGroupStatusGroupSource) getCachedGroupData(_ context.Context, _ types.JID) (*groupMetaCache, error) {
+	f.cachedCalls++
+	return f.cached, f.cachedErr
+}
+
+func (f *fakeGroupStatusGroupSource) refreshGroupData(_ context.Context, _ types.JID) (*groupMetaCache, error) {
+	f.refreshCalls++
+	return f.refreshed, f.refreshErr
+}
+
+func TestGroupStatusAuthorChecksMembership(t *testing.T) {
+	pn := types.JID{User: "5511999999999", Server: types.DefaultUserServer, Device: 3}
+	lid := types.JID{User: "123456789", Server: types.HiddenUserServer, Device: 3}
+	other := types.NewJID("5511888888888", types.DefaultUserServer)
+	otherLID := types.NewJID("987654321", types.HiddenUserServer)
+	notMember := wrapIQError(ErrNotInGroup, ErrIQForbidden)
+
+	tests := []struct {
+		name        string
+		source      *fakeGroupStatusGroupSource
+		ownLID      types.JID
+		wantAuthor  types.JID
+		wantErr     error
+		wantRefresh int
+	}{
+		{
+			name:       "member in the cache",
+			source:     &fakeGroupStatusGroupSource{cached: &groupMetaCache{Members: []types.JID{other, pn.ToNonAD()}}},
+			ownLID:     lid,
+			wantAuthor: pn.ToNonAD(),
+		},
+		{
+			name: "member by LID in a LID group",
+			source: &fakeGroupStatusGroupSource{cached: &groupMetaCache{
+				AddressingMode: types.AddressingModeLID,
+				Members:        []types.JID{otherLID, lid.ToNonAD()},
+			}},
+			ownLID:     lid,
+			wantAuthor: lid.ToNonAD(),
+		},
+		{
+			name:       "member listed by the other identity",
+			source:     &fakeGroupStatusGroupSource{cached: &groupMetaCache{Members: []types.JID{lid.ToNonAD()}}},
+			ownLID:     lid,
+			wantAuthor: pn.ToNonAD(),
+		},
+		{
+			// The account was removed while the cache was warm: the leave
+			// notification took it out of the members, the server confirms.
+			name: "removed from the group",
+			source: &fakeGroupStatusGroupSource{
+				cached:     &groupMetaCache{Members: []types.JID{other}},
+				refreshErr: notMember,
+			},
+			ownLID:      lid,
+			wantErr:     ErrNotInGroup,
+			wantRefresh: 1,
+		},
+		{
+			name: "stale cache, the server lists the account",
+			source: &fakeGroupStatusGroupSource{
+				cached:    &groupMetaCache{Members: []types.JID{other}},
+				refreshed: &groupMetaCache{AddressingMode: types.AddressingModeLID, Members: []types.JID{other, lid.ToNonAD()}},
+			},
+			ownLID:      lid,
+			wantAuthor:  lid.ToNonAD(),
+			wantRefresh: 1,
+		},
+		{
+			name: "fresh list without the account leaves the decision to the server",
+			source: &fakeGroupStatusGroupSource{
+				cached:    &groupMetaCache{Members: []types.JID{other}},
+				refreshed: &groupMetaCache{Members: []types.JID{other}},
+			},
+			ownLID:      lid,
+			wantAuthor:  pn.ToNonAD(),
+			wantRefresh: 1,
+		},
+		{
+			name: "LID group with no own LID stored",
+			source: &fakeGroupStatusGroupSource{
+				cached:    &groupMetaCache{AddressingMode: types.AddressingModeLID, Members: []types.JID{lid.ToNonAD()}},
+				refreshed: &groupMetaCache{AddressingMode: types.AddressingModeLID, Members: []types.JID{lid.ToNonAD()}},
+			},
+			wantAuthor:  pn.ToNonAD(),
+			wantRefresh: 1,
+		},
+		{
+			name: "refresh fails",
+			source: &fakeGroupStatusGroupSource{
+				cached:     &groupMetaCache{},
+				refreshErr: ErrIQTimedOut,
+			},
+			ownLID:      lid,
+			wantErr:     ErrIQTimedOut,
+			wantRefresh: 1,
+		},
+		{
+			name:    "cold cache, group not found",
+			source:  &fakeGroupStatusGroupSource{cachedErr: wrapIQError(ErrGroupNotFound, ErrIQNotFound)},
+			ownLID:  lid,
+			wantErr: ErrGroupNotFound,
+		},
+		{
+			name:        "no data at all",
+			source:      &fakeGroupStatusGroupSource{},
+			ownLID:      lid,
+			wantErr:     nil,
+			wantRefresh: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			author, err := groupStatusAuthor(context.Background(), test.source, testStatusGroup, pn, test.ownLID)
+			switch {
+			case test.wantErr != nil:
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("error = %v, want %v", err, test.wantErr)
+				}
+			case test.wantAuthor.IsEmpty():
+				if err == nil {
+					t.Fatalf("expected an error, got author %s", author)
+				}
+			case err != nil:
+				t.Fatalf("groupStatusAuthor returned an error: %v", err)
+			case author != test.wantAuthor:
+				t.Fatalf("author = %s, want %s", author, test.wantAuthor)
+			}
+			if test.source.cachedCalls != 1 {
+				t.Fatalf("cache was read %d times, want 1", test.source.cachedCalls)
+			}
+			if test.source.refreshCalls != test.wantRefresh {
+				t.Fatalf("group info was fetched %d times, want %d", test.source.refreshCalls, test.wantRefresh)
+			}
+		})
+	}
+
+	source := &fakeGroupStatusGroupSource{cached: &groupMetaCache{Members: []types.JID{pn.ToNonAD()}}}
+	if _, err := groupStatusAuthor(context.Background(), source, testStatusGroup, types.EmptyJID, lid); !errors.Is(err, ErrNotLoggedIn) {
+		t.Fatalf("logged out error = %v, want ErrNotLoggedIn", err)
+	}
+	if source.cachedCalls != 0 {
+		t.Fatal("a logged out client looked up the group")
+	}
+}
+
+func TestGroupMetaCacheHasMember(t *testing.T) {
+	pn := types.JID{User: "5511999999999", Server: types.DefaultUserServer, Device: 3}
+	samePNAsLID := types.NewJID("5511999999999", types.HiddenUserServer)
+	cache := &groupMetaCache{Members: []types.JID{samePNAsLID, types.NewJID("5511888888888", types.DefaultUserServer)}}
+
+	if cache.hasMember(pn) {
+		t.Fatal("matched a member on another server")
+	}
+	if !(&groupMetaCache{Members: []types.JID{pn.ToNonAD()}}).hasMember(types.EmptyJID, pn) {
+		t.Fatal("did not match the member ignoring the device")
+	}
+	if (&groupMetaCache{Members: []types.JID{types.EmptyJID}}).hasMember(types.EmptyJID) {
+		t.Fatal("an empty JID matched")
+	}
+	var missing *groupMetaCache
+	if missing.hasMember(pn) {
+		t.Fatal("a missing cache entry has members")
 	}
 }
 
