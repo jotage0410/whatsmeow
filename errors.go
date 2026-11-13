@@ -116,6 +116,12 @@ var (
 	ErrRecipientNotOnWhatsApp   = errors.New("recipient is not on WhatsApp")
 )
 
+// Errors that Client.SendGroupStatus and BuildGroupStatusMessage can return
+var (
+	ErrGroupStatusNotGroup           = errors.New("group status recipient must be a group JID")
+	ErrGroupStatusUnsupportedContent = errors.New("group status content must be an image, video, audio or text message")
+)
+
 type DownloadHTTPError struct {
 	*http.Response
 }

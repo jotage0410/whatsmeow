@@ -928,6 +928,10 @@ func (cli *Client) sendDM(
 
 func getTypeFromMessage(msg *waE2E.Message) string {
 	switch {
+	case msg.GetGroupStatusMessageV2().GetMessage() != nil:
+		return getTypeFromMessage(msg.GroupStatusMessageV2.Message)
+	case msg.GetGroupStatusMessage().GetMessage() != nil:
+		return getTypeFromMessage(msg.GroupStatusMessage.Message)
 	case msg.ViewOnceMessage != nil:
 		return getTypeFromMessage(msg.ViewOnceMessage.Message)
 	case msg.ViewOnceMessageV2 != nil:
@@ -955,6 +959,10 @@ func getTypeFromMessage(msg *waE2E.Message) string {
 
 func getMediaTypeFromMessage(msg *waE2E.Message) string {
 	switch {
+	case msg.GetGroupStatusMessageV2().GetMessage() != nil:
+		return getMediaTypeFromMessage(msg.GroupStatusMessageV2.Message)
+	case msg.GetGroupStatusMessage().GetMessage() != nil:
+		return getMediaTypeFromMessage(msg.GroupStatusMessage.Message)
 	case msg.ViewOnceMessage != nil:
 		return getMediaTypeFromMessage(msg.ViewOnceMessage.Message)
 	case msg.ViewOnceMessageV2 != nil:
@@ -1167,6 +1175,11 @@ func (cli *Client) getMessageContent(
 	}
 	if extraParams.additionalNodes != nil {
 		content = append(content, *extraParams.additionalNodes...)
+	}
+	if isGroupStatusMessage(message) {
+		// Done here rather than by the caller so that retries, which rebuild the
+		// node from the stored message, keep the group status markers too.
+		content = withGroupStatusMeta(content)
 	}
 
 	if buttonType := getButtonTypeFromMessage(message); buttonType != "" {
