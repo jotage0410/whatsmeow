@@ -649,3 +649,33 @@ func TestRevokeGroupStatusValidatesBeforeTouchingTheNetwork(t *testing.T) {
 		t.Fatalf("nil client error = %v, want ErrClientIsNil", err)
 	}
 }
+
+func TestCheckGroupStatusPermission(t *testing.T) {
+	ownPN := types.NewJID("5511999999999", types.DefaultUserServer)
+	ownLID := types.NewJID("111111111111111", types.HiddenUserServer)
+	other := types.GroupParticipant{JID: types.NewJID("222222222222222", types.HiddenUserServer), IsAdmin: true}
+	group := func(announce bool, participants ...types.GroupParticipant) *types.GroupInfo {
+		return &types.GroupInfo{GroupAnnounce: types.GroupAnnounce{IsAnnounce: announce}, Participants: append([]types.GroupParticipant{other}, participants...)}
+	}
+	for name, tc := range map[string]struct {
+		info *types.GroupInfo
+		want error
+	}{
+		"open group, member":       {group(false, types.GroupParticipant{JID: ownLID}), nil},
+		"admins only, admin (LID)": {group(true, types.GroupParticipant{JID: ownLID, IsAdmin: true}), nil},
+		"admins only, admin (PN)":  {group(true, types.GroupParticipant{JID: ownPN, IsAdmin: true}), nil},
+		"admins only, owner":       {group(true, types.GroupParticipant{JID: ownLID, IsSuperAdmin: true}), nil},
+		"admins only, phone number field": {group(true, types.GroupParticipant{
+			JID: types.NewJID("333333333333333", types.HiddenUserServer), PhoneNumber: ownPN, IsAdmin: true}), nil},
+		"admins only, member":           {group(true, types.GroupParticipant{JID: ownLID}), ErrGroupStatusAdminsOnly},
+		"admins only, member by number": {group(true, types.GroupParticipant{JID: ownPN}), ErrGroupStatusAdminsOnly},
+		"admins only, not in the list":  {group(true), nil},
+		"no info":                       {nil, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := checkGroupStatusPermission(tc.info, ownPN, ownLID); !errors.Is(err, tc.want) || (tc.want == nil && err != nil) {
+				t.Fatalf("error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}

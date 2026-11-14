@@ -40,10 +40,12 @@ const (
 //		ImageMessage: &waE2E.ImageMessage{...},
 //	})
 //
-// The sender must be a member of the group. When the cached member list does not include this
-// account, the group info is fetched again before sending, and the error wraps ErrNotInGroup when
-// the server says the account is not a member. Group status is a recent WhatsApp feature, so the
-// server may still reject it for some accounts or groups.
+// The sender must be a member of the group, and an admin when only admins can send messages there.
+// The group info is fetched before sending: the error wraps ErrNotInGroup when the server says the
+// account is not a member, and is ErrGroupStatusAdminsOnly when only admins can send messages and
+// this account is not one (the server would accept the status and deliver it to nobody). Group
+// status is a recent WhatsApp feature, so the server may still reject it for some accounts or
+// groups.
 func (cli *Client) SendGroupStatus(ctx context.Context, groupJID types.JID, inner *waE2E.Message, extra ...SendRequestExtra) (SendResponse, error) {
 	if cli == nil {
 		return SendResponse{}, ErrClientIsNil
@@ -54,6 +56,19 @@ func (cli *Client) SendGroupStatus(ctx context.Context, groupJID types.JID, inne
 	if inner == nil {
 		return SendResponse{}, fmt.Errorf("%w: message is nil", ErrGroupStatusUnsupportedContent)
 	}
+	ownPN, ownLID := cli.getOwnID(), cli.getOwnLID()
+	if ownPN.IsEmpty() {
+		return SendResponse{}, ErrNotLoggedIn
+	}
+	// Fresh group info, also for the author below: when only admins can send messages, the server
+	// accepts a group status from any other member and delivers it to nobody, without an error.
+	info, err := cli.getGroupInfo(ctx, groupJID, true)
+	if err != nil {
+		return SendResponse{}, fmt.Errorf("failed to get group info: %w", err)
+	}
+	if err = checkGroupStatusPermission(info, ownPN, ownLID); err != nil {
+		return SendResponse{}, err
+	}
 	author, err := cli.getGroupStatusAuthor(ctx, groupJID)
 	if err != nil {
 		return SendResponse{}, err
@@ -63,6 +78,31 @@ func (cli *Client) SendGroupStatus(ctx context.Context, groupJID types.JID, inne
 		return SendResponse{}, err
 	}
 	return cli.SendMessage(ctx, groupJID, message, extra...)
+}
+
+// checkGroupStatusPermission returns ErrGroupStatusAdminsOnly when only admins can send messages
+// in the group and this account is not an admin. The server accepts a group status in that case
+// but does not deliver it to anyone (checked on a device on 2026-11-14). Restricting who can edit
+// the group info does not matter. When the account is not in the member list, the server decides.
+func checkGroupStatusPermission(info *types.GroupInfo, ownPN, ownLID types.JID) error {
+	if info == nil || !info.IsAnnounce {
+		return nil
+	}
+	for _, p := range info.Participants {
+		for _, member := range []types.JID{p.JID, p.PhoneNumber, p.LID} {
+			if member.IsEmpty() {
+				continue
+			}
+			if (!ownPN.IsEmpty() && member.User == ownPN.User && member.Server == ownPN.Server) ||
+				(!ownLID.IsEmpty() && member.User == ownLID.User && member.Server == ownLID.Server) {
+				if p.IsAdmin || p.IsSuperAdmin {
+					return nil
+				}
+				return ErrGroupStatusAdminsOnly
+			}
+		}
+	}
+	return nil
 }
 
 // getGroupStatusAuthor returns the identity this account posts with in the given group, after

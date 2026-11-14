@@ -120,6 +120,7 @@ var (
 var (
 	ErrGroupStatusNotGroup           = errors.New("group status recipient must be a group JID")
 	ErrGroupStatusUnsupportedContent = errors.New("group status content must be an image, video, audio or text message")
+	ErrGroupStatusAdminsOnly         = errors.New("only admins can send messages in this group, so a group status from this account would not be delivered")
 )
 
 type DownloadHTTPError struct {
