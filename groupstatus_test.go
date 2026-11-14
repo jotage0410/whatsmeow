@@ -679,3 +679,22 @@ func TestCheckGroupStatusPermission(t *testing.T) {
 		})
 	}
 }
+
+func TestIsStatusReactionNode(t *testing.T) {
+	enc := waBinary.Node{Tag: "enc", Attrs: waBinary.Attrs{"type": "msg", "v": "2"}}
+	for name, tc := range map[string]struct {
+		node waBinary.Node
+		want bool
+	}{
+		"reaction":                   {waBinary.Node{Tag: "status", Attrs: waBinary.Attrs{"type": "reaction"}, Content: []waBinary.Node{enc, {Tag: "meta", Attrs: waBinary.Attrs{"content_type": "add_on"}}}}, true},
+		"status update of a contact": {waBinary.Node{Tag: "status", Attrs: waBinary.Attrs{"type": "media"}, Content: []waBinary.Node{enc}}, false},
+		"text status":                {waBinary.Node{Tag: "status", Attrs: waBinary.Attrs{"type": "text"}, Content: []waBinary.Node{enc}}, false},
+		"reaction without content":   {waBinary.Node{Tag: "status", Attrs: waBinary.Attrs{"type": "reaction"}}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := isStatusReactionNode(&tc.node); got != tc.want {
+				t.Fatalf("isStatusReactionNode = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

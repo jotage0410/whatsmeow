@@ -76,6 +76,13 @@ func (cli *Client) handleUnencryptedMessage(ctx context.Context, node *waBinary.
 		return
 	}
 	if info.Sender.Server != types.NewsletterServer {
+		if isStatusReactionNode(node) {
+			// Reactions to status updates (the account's own, in status@broadcast or in a group)
+			// arrive as encrypted <status type="reaction"> nodes and are decrypted like messages.
+			// The status updates of contacts and groups themselves are still only acknowledged.
+			cli.decryptMessages(ctx, info, node)
+			return
+		}
 		cli.sendAck(ctx, node, 0)
 		return
 	}
@@ -83,6 +90,11 @@ func (cli *Client) handleUnencryptedMessage(ctx context.Context, node *waBinary.
 	var cancelled bool
 	defer cli.maybeDeferredAck(ctx, node)(&cancelled)
 	cancelled = cli.handlePlaintextMessage(ctx, info, node)
+}
+
+// isStatusReactionNode reports whether a <status> node is an encrypted reaction to a status update.
+func isStatusReactionNode(node *waBinary.Node) bool {
+	return node.Attrs["type"] == "reaction" && len(node.GetChildrenByTag("enc")) > 0
 }
 
 func (cli *Client) parseMessageSource(node *waBinary.Node, requireParticipant bool) (source types.MessageSource, err error) {
