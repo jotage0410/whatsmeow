@@ -1063,6 +1063,10 @@ const RemoveReactionText = ""
 
 func getEditAttribute(msg *waE2E.Message) types.EditAttribute {
 	switch {
+	case msg.GetGroupStatusMessageV2().GetMessage() != nil:
+		return getEditAttribute(msg.GroupStatusMessageV2.Message)
+	case msg.GetGroupStatusMessage().GetMessage() != nil:
+		return getEditAttribute(msg.GroupStatusMessage.Message)
 	case msg.EditedMessage != nil && msg.EditedMessage.Message != nil:
 		return getEditAttribute(msg.EditedMessage.Message)
 	case msg.ProtocolMessage != nil && msg.ProtocolMessage.GetKey() != nil:

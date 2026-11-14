@@ -585,3 +585,67 @@ func TestMessageContentLeavesRegularMessagesAlone(t *testing.T) {
 		t.Fatalf("regular message got %d <meta> nodes: %v", count, content)
 	}
 }
+
+func TestBuildGroupStatusRevoke(t *testing.T) {
+	msg := BuildGroupStatusRevoke(testStatusGroup, "3EB0STATUSID")
+	inner := msg.GetGroupStatusMessageV2().GetMessage()
+	if inner == nil {
+		t.Fatal("the revoke is not wrapped in GroupStatusMessageV2")
+	}
+	pm := inner.GetProtocolMessage()
+	if pm.GetType() != waE2E.ProtocolMessage_REVOKE {
+		t.Fatalf("protocol message type = %v, want REVOKE", pm.GetType())
+	}
+	key := pm.GetKey()
+	if key.GetRemoteJID() != testStatusGroup.String() || !key.GetFromMe() || key.GetID() != "3EB0STATUSID" || key.GetParticipant() != "" {
+		t.Fatalf("revoke key = %v", key)
+	}
+	if !isGroupStatusMessage(msg) {
+		t.Fatal("isGroupStatusMessage = false")
+	}
+	if got := getEditAttribute(msg); got != types.EditAttributeSenderRevoke {
+		t.Fatalf("edit attribute = %q, want %q", got, types.EditAttributeSenderRevoke)
+	}
+	if got := getTypeFromMessage(msg); got != "text" {
+		t.Fatalf("stanza type = %q, want text", got)
+	}
+	if got := getMediaTypeFromMessage(msg); got != "" {
+		t.Fatalf("media type = %q, want none", got)
+	}
+}
+
+// A plain revoke sent to the group reaches the members as the revoke of a chat message and the
+// status stays up (checked on a device on 2026-11-14); the group status revoke must carry the
+// marker, also when the stanza is rebuilt for a retry receipt from the stored message.
+func TestGroupStatusRevokeCarriesTheMarker(t *testing.T) {
+	cli := &Client{}
+	content := cli.getMessageContent(waBinary.Node{Tag: "participants"}, BuildGroupStatusRevoke(testStatusGroup, "ID"), waBinary.Attrs{}, false, nodeExtraParams{})
+	count, attrs := countMetaNodes(content)
+	if count != 1 || attrs[groupStatusMetaFlag] != "true" || attrs[groupStatusMetaOrigin] != groupStatusOrigin {
+		t.Fatalf("group status revoke: %d <meta> nodes, attrs %v", count, attrs)
+	}
+	plain := cli.BuildRevoke(testStatusGroup, types.EmptyJID, "ID")
+	content = cli.getMessageContent(waBinary.Node{Tag: "participants"}, plain, waBinary.Attrs{}, false, nodeExtraParams{})
+	if count, _ := countMetaNodes(content); count != 0 {
+		t.Fatalf("plain revoke got %d <meta> nodes", count)
+	}
+}
+
+func TestRevokeGroupStatusValidatesBeforeTouchingTheNetwork(t *testing.T) {
+	cli := &Client{}
+	for name, jid := range map[string]types.JID{
+		"phone number": types.NewJID("5511999999999", types.DefaultUserServer),
+		"status":       types.StatusBroadcastJID,
+		"empty":        types.EmptyJID,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := cli.RevokeGroupStatus(context.Background(), jid, "ID"); !errors.Is(err, ErrGroupStatusNotGroup) {
+				t.Fatalf("error = %v, want ErrGroupStatusNotGroup", err)
+			}
+		})
+	}
+	var nilClient *Client
+	if _, err := nilClient.RevokeGroupStatus(context.Background(), testStatusGroup, "ID"); !errors.Is(err, ErrClientIsNil) {
+		t.Fatalf("nil client error = %v, want ErrClientIsNil", err)
+	}
+}

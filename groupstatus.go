@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waStatusAttributions"
 	"go.mau.fi/whatsmeow/types"
@@ -195,6 +196,43 @@ func BuildGroupStatusMessage(inner *waE2E.Message, authorJID types.JID) (*waE2E.
 			MessageSecret: random.Bytes(32),
 		},
 	}, nil
+}
+
+// BuildGroupStatusRevoke builds the message that deletes one of this account's group status
+// updates. It is a regular revoke wrapped in the group status envelope (GroupStatusMessageV2), so
+// that the stanza carries the <meta is_group_status="true" origin="group_status"/> marker, also
+// when it is sent again on a retry receipt. A plain revoke (BuildRevoke) sent to the group reaches
+// the members as a revoke of a chat message and leaves the status in place.
+func BuildGroupStatusRevoke(groupJID types.JID, id types.MessageID) *waE2E.Message {
+	return &waE2E.Message{
+		GroupStatusMessageV2: &waE2E.FutureProofMessage{
+			Message: &waE2E.Message{
+				ProtocolMessage: &waE2E.ProtocolMessage{
+					Type: waE2E.ProtocolMessage_REVOKE.Enum(),
+					Key: &waCommon.MessageKey{
+						RemoteJID: new(groupJID.String()),
+						FromMe:    new(true),
+						ID:        new(id),
+					},
+				},
+			},
+		},
+	}
+}
+
+// RevokeGroupStatus deletes one of this account's group status updates for every member.
+//
+//	resp, err := cli.SendGroupStatus(ctx, groupJID, content)
+//	...
+//	_, err = cli.RevokeGroupStatus(ctx, groupJID, resp.ID)
+func (cli *Client) RevokeGroupStatus(ctx context.Context, groupJID types.JID, id types.MessageID, extra ...SendRequestExtra) (SendResponse, error) {
+	if cli == nil {
+		return SendResponse{}, ErrClientIsNil
+	}
+	if groupJID.Server != types.GroupServer || groupJID.User == "" {
+		return SendResponse{}, fmt.Errorf("%w (got %q)", ErrGroupStatusNotGroup, groupJID.String())
+	}
+	return cli.SendMessage(ctx, groupJID, BuildGroupStatusRevoke(groupJID, id), extra...)
 }
 
 func isGroupStatusMessage(msg *waE2E.Message) bool {
