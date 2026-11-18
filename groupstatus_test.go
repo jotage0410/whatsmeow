@@ -306,6 +306,48 @@ func TestSendGroupStatusValidatesBeforeTouchingTheNetwork(t *testing.T) {
 	}
 }
 
+func TestSendGroupStatusRejectsUnsupportedContentBeforeTheGroupQuery(t *testing.T) {
+	// A logged-in client without a connection: if the group info query ran first, the call would
+	// fail with a network error (or panic) instead of ErrGroupStatusUnsupportedContent.
+	pn := types.JID{User: "5511999999999", Server: types.DefaultUserServer, Device: 3}
+	cli := &Client{Store: &store.Device{ID: &pn}}
+	for name, inner := range map[string]*waE2E.Message{
+		"empty":    {},
+		"document": {DocumentMessage: &waE2E.DocumentMessage{}},
+		"sticker":  {StickerMessage: &waE2E.StickerMessage{}},
+		"location": {LocationMessage: &waE2E.LocationMessage{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := cli.SendGroupStatus(context.Background(), testStatusGroup, inner); !errors.Is(err, ErrGroupStatusUnsupportedContent) {
+				t.Fatalf("error = %v, want ErrGroupStatusUnsupportedContent", err)
+			}
+		})
+	}
+}
+
+func TestGroupStatusContentSupported(t *testing.T) {
+	for name, tc := range map[string]struct {
+		msg  *waE2E.Message
+		want bool
+	}{
+		"nil":           {nil, false},
+		"empty":         {&waE2E.Message{}, false},
+		"image":         {&waE2E.Message{ImageMessage: &waE2E.ImageMessage{}}, true},
+		"video":         {&waE2E.Message{VideoMessage: &waE2E.VideoMessage{}}, true},
+		"audio":         {&waE2E.Message{AudioMessage: &waE2E.AudioMessage{}}, true},
+		"extended text": {&waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{}}, true},
+		"conversation":  {&waE2E.Message{Conversation: new("hi")}, true},
+		"document":      {&waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{}}, false},
+		"sticker":       {&waE2E.Message{StickerMessage: &waE2E.StickerMessage{}}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := groupStatusContentSupported(tc.msg); got != tc.want {
+				t.Fatalf("groupStatusContentSupported = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGroupStatusAuthorFollowsGroupAddressing(t *testing.T) {
 	pn := types.JID{User: "5511999999999", Server: types.DefaultUserServer, Device: 3}
 	lid := types.JID{User: "123456789", Server: types.HiddenUserServer, Device: 3}

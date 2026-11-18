@@ -34,7 +34,9 @@ const (
 //
 // The inner message must be an image, video, audio or text (Conversation or ExtendedTextMessage)
 // message, built the same way as for a regular status (see Upload for media). It is not modified:
-// the envelope is built from a copy, see BuildGroupStatusMessage.
+// the envelope is built from a copy, see BuildGroupStatusMessage. Any other content (a document or
+// a sticker, for example) is refused with ErrGroupStatusUnsupportedContent before the group info is
+// fetched.
 //
 //	resp, err := cli.SendGroupStatus(ctx, groupJID, &waE2E.Message{
 //		ImageMessage: &waE2E.ImageMessage{...},
@@ -55,6 +57,10 @@ func (cli *Client) SendGroupStatus(ctx context.Context, groupJID types.JID, inne
 	}
 	if inner == nil {
 		return SendResponse{}, fmt.Errorf("%w: message is nil", ErrGroupStatusUnsupportedContent)
+	} else if !groupStatusContentSupported(inner) {
+		// Checked before the group info query below, so that a document or a sticker is refused
+		// with this error instead of whatever the network returns.
+		return SendResponse{}, ErrGroupStatusUnsupportedContent
 	}
 	ownPN, ownLID := cli.getOwnID(), cli.getOwnLID()
 	if ownPN.IsEmpty() {
@@ -78,6 +84,17 @@ func (cli *Client) SendGroupStatus(ctx context.Context, groupJID types.JID, inne
 		return SendResponse{}, err
 	}
 	return cli.SendMessage(ctx, groupJID, message, extra...)
+}
+
+// groupStatusContentSupported reports whether a message can be posted as a group status: an image,
+// video, audio or text (Conversation or ExtendedTextMessage) message, the cases
+// BuildGroupStatusMessage handles.
+func groupStatusContentSupported(msg *waE2E.Message) bool {
+	if msg == nil {
+		return false
+	}
+	return msg.ImageMessage != nil || msg.VideoMessage != nil || msg.AudioMessage != nil ||
+		msg.ExtendedTextMessage != nil || msg.Conversation != nil
 }
 
 // checkGroupStatusPermission returns ErrGroupStatusAdminsOnly when only admins can send messages
